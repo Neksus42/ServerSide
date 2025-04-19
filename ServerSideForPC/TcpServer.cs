@@ -52,12 +52,12 @@ namespace ServerSideForPC
 
                     try
                     {
-                        CodeHandler.CodeHandlerFunc(ref receivedJson, tcpClient);
+                        CodeHandler.CodeHandlerFunc(receivedJson, tcpClient);
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine("Ошибка в обработчике: " + ex.Message);
-                        break;
+                        //break;
                     }
                 }
             }

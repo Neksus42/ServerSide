@@ -16,7 +16,7 @@ namespace ServerSideForPC
 {
     internal class CodeHandler
     {
-        static public void CodeHandlerFunc(ref string jsonstring, TcpClient tcpClient)
+        static public async void CodeHandlerFunc(string jsonstring, TcpClient tcpClient)
         {
 
 
@@ -60,6 +60,7 @@ namespace ServerSideForPC
 
 
                         string deviceId = devices[Convert.ToInt32(subarr[1])].ID;
+
                         AudioDeviceManager.SetDefaultAudioPlaybackDevice(deviceId);
                         Console.WriteLine("Устройство успешно установлено по умолчанию.");
                         break;
@@ -67,11 +68,13 @@ namespace ServerSideForPC
                 case "SwapDisplayPC":
                     {
                         DisplayControl.SetDisplayMode("internal");
+
                         break;
                     }
                 case "SwapDisplayTV":
                     {
                         DisplayControl.SetDisplayMode("external");
+                        await AudioDeviceManager.WaitAndSetDefaultAsync("TV", TimeSpan.FromSeconds(10));
                         break;
                     }
                 

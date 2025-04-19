@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 namespace ServerSideForPC
 {
     internal class AudioDeviceManager
@@ -48,7 +49,74 @@ namespace ServerSideForPC
                 Console.WriteLine("Ошибка установки дефолтного аудиоустройства: " + ex.Message);
             }
         }
+        /// <summary>Дождаться появления устройства с заданной меткой и сделать его default.</summary>
+        /// <param name="friendlyPart">Часть FriendlyName, например "Samsung" или "HDMI".</param>
+        /// <param name="timeout">Максимальное время ожидания.</param>
+        public static async Task WaitAndSetDefaultAsync(string friendlyPart,
+                                                        TimeSpan timeout,
+                                                        CancellationToken ct = default)
+        {
+            using var watcher = new DeviceAppearWatcher(friendlyPart, ct);
+            string id = await watcher.WaitAsync(timeout, ct).ConfigureAwait(false);
+
+            SetDefaultAudioPlaybackDevice(id);
+        }
+
+        // ---------- внутренний класс‑наблюдатель ----------
+        private sealed class DeviceAppearWatcher : IMMNotificationClient, IDisposable
+        {
+            private readonly TaskCompletionSource<string> _tcs =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly string _needle;
+            private readonly MMDeviceEnumerator _enum = new();
+            private readonly CancellationTokenRegistration _ctr;
+
+            public DeviceAppearWatcher(string needle, CancellationToken ct)
+            {
+                _needle = needle;
+                _enum.RegisterEndpointNotificationCallback(this);
+                _ctr = ct.Register(() => _tcs.TrySetCanceled(ct));
+            }
+
+            public Task<string> WaitAsync(TimeSpan timeout, CancellationToken ct)
+                => _tcs.Task.WaitAsync(timeout, ct);
+
+            // ---- IMMNotificationClient ----
+            public void OnDeviceAdded(string pwstrDeviceId)
+                => Check(pwstrDeviceId);
+
+            public void OnDeviceStateChanged(string pwstrDeviceId, DeviceState newState)
+            {
+                if (newState == DeviceState.Active)
+                    Check(pwstrDeviceId);
+            }
+
+            private void Check(string id)
+            {
+                using var dev = _enum.GetDevice(id);
+                if (dev.FriendlyName.Contains(_needle, StringComparison.OrdinalIgnoreCase))
+                    _tcs.TrySetResult(id);
+            }
+
+            // остальные методы интерфейса (ничего не делаем)
+            public void OnDeviceRemoved(string id) { }
+            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string id) { }
+            public void OnPropertyValueChanged(string id, PropertyKey key) { }
+
+            public void Dispose()
+            {
+                _enum.UnregisterEndpointNotificationCallback(this);
+                _ctr.Dispose();
+                _enum.Dispose();
+            }
+
+            public void OnPropertyValueChanged(string pwstrDeviceId, NAudio.CoreAudioApi.PropertyKey key)
+            {
+                throw new NotImplementedException();
+            }
+        }
     }
+
     // Необходимые определения для COM-интеропа:
 
     /// <summary>
@@ -113,4 +181,5 @@ namespace ServerSideForPC
     public class PolicyConfig
     {
     }
+
 }
