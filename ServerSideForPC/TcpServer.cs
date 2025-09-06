@@ -6,10 +6,9 @@ using System.Threading.Tasks;
 
 namespace ServerSideForPC
 {
-    internal class TcpServer
+    public static class TcpServer
     {
         private static TcpListener listener;
-     
 
         public static void StartServer(int port)
         {
@@ -24,9 +23,6 @@ namespace ServerSideForPC
             {
                 TcpClient tcpClient = await listener.AcceptTcpClientAsync();
                 Console.WriteLine("Подключен: " + tcpClient.Client.RemoteEndPoint);
-                
-                
-              
                 _ = Task.Run(() => RecieveConnectionAsync(tcpClient));
             }
         }
@@ -35,7 +31,7 @@ namespace ServerSideForPC
         {
             try
             {
-                NetworkStream stream = tcpClient.GetStream();
+                using NetworkStream stream = tcpClient.GetStream();
                 byte[] buffer = new byte[1024];
 
                 while (true)
@@ -57,7 +53,6 @@ namespace ServerSideForPC
                     catch (Exception ex)
                     {
                         Console.WriteLine("Ошибка в обработчике: " + ex.Message);
-                        //break;
                     }
                 }
             }
@@ -74,23 +69,50 @@ namespace ServerSideForPC
 
         public static void SendMessage(string message, TcpClient tcpClient)
         {
-            Stream currentStream = tcpClient.GetStream();
-            if (currentStream == null)
+            if (tcpClient == null)
             {
-                Console.WriteLine("Нет активного подключения для отправки сообщения.");
+                Console.WriteLine("Нет активного клиента для отправки сообщения.");
                 return;
             }
 
-            byte[] data = Encoding.UTF8.GetBytes(message + "\n");
-            try
+            lock (tcpClient) 
             {
-                currentStream.Write(data, 0, data.Length);
-                Console.WriteLine("Сообщение отправлено: " + message);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Ошибка отправки сообщения: " + ex.Message);
+                try
+                {
+                    if (tcpClient.Connected)
+                    {
+                        NetworkStream stream = tcpClient.GetStream();
+                        if (stream.CanWrite)
+                        {
+                            byte[] data = Encoding.UTF8.GetBytes(message + "\n");
+                            stream.Write(data, 0, data.Length);
+                            stream.Flush();
+                            Console.WriteLine("Сообщение отправлено: " + message);
+                        }
+                        else
+                        {
+                            Console.WriteLine("Сеть недоступна для записи у клиента: " + tcpClient.Client.RemoteEndPoint);
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Клиент не подключен: " + tcpClient.Client.RemoteEndPoint);
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    Console.WriteLine("Попытка отправки на уже закрытое соединение.");
+                }
+                catch (IOException ioEx)
+                {
+                    Console.WriteLine("Сетевая ошибка при отправке: " + ioEx.Message);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Неожиданная ошибка при отправке сообщения: " + ex);
+                }
             }
         }
     }
+
 }

@@ -53,71 +53,86 @@ namespace ServerSideForPC
         /// <param name="friendlyPart">Часть FriendlyName, например "Samsung" или "HDMI".</param>
         /// <param name="timeout">Максимальное время ожидания.</param>
         public static async Task WaitAndSetDefaultAsync(string friendlyPart,
-                                                        TimeSpan timeout,
-                                                        CancellationToken ct = default)
+                                                TimeSpan timeout,
+                                                CancellationToken ct = default)
         {
             using var watcher = new DeviceAppearWatcher(friendlyPart, ct);
-            string id = await watcher.WaitAsync(timeout, ct).ConfigureAwait(false);
+
+            foreach (var dev in watcher.Enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            {
+                if (dev.FriendlyName.Contains(friendlyPart, StringComparison.OrdinalIgnoreCase))
+                {
+                    SetDefaultAudioPlaybackDevice(dev.ID);
+                    return; 
+                }
+            }
+
+            string id;
+            try
+            {
+                id = await watcher.WaitAsync(timeout, ct).ConfigureAwait(false);
+            }
+            catch (TaskCanceledException)
+            {
+                Console.WriteLine($"Устройство '{friendlyPart}' не появилось в течение {timeout.TotalSeconds} секунд.");
+                return;
+            }
 
             SetDefaultAudioPlaybackDevice(id);
         }
 
-        // ---------- внутренний класс‑наблюдатель ----------
         private sealed class DeviceAppearWatcher : IMMNotificationClient, IDisposable
         {
             private readonly TaskCompletionSource<string> _tcs =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             private readonly string _needle;
-            private readonly MMDeviceEnumerator _enum = new();
             private readonly CancellationTokenRegistration _ctr;
+
+            public MMDeviceEnumerator Enumerator { get; }
 
             public DeviceAppearWatcher(string needle, CancellationToken ct)
             {
                 _needle = needle;
-                _enum.RegisterEndpointNotificationCallback(this);
+                Enumerator = new MMDeviceEnumerator();
+                Enumerator.RegisterEndpointNotificationCallback(this);
                 _ctr = ct.Register(() => _tcs.TrySetCanceled(ct));
             }
 
-            public Task<string> WaitAsync(TimeSpan timeout, CancellationToken ct)
-                => _tcs.Task.WaitAsync(timeout, ct);
+            public Task<string> WaitAsync(TimeSpan timeout, CancellationToken ct) =>
+                _tcs.Task.WaitAsync(timeout, ct);
 
-            // ---- IMMNotificationClient ----
-            public void OnDeviceAdded(string pwstrDeviceId)
-                => Check(pwstrDeviceId);
-
+            // --- IMMNotificationClient ---
+            public void OnDeviceAdded(string pwstrDeviceId) => Check(pwstrDeviceId);
             public void OnDeviceStateChanged(string pwstrDeviceId, DeviceState newState)
             {
-                if (newState == DeviceState.Active)
-                    Check(pwstrDeviceId);
+                if (newState == DeviceState.Active) Check(pwstrDeviceId);
             }
 
             private void Check(string id)
             {
-                using var dev = _enum.GetDevice(id);
-                if (dev.FriendlyName.Contains(_needle, StringComparison.OrdinalIgnoreCase))
-                    _tcs.TrySetResult(id);
+                try
+                {
+                    using var dev = Enumerator.GetDevice(id);
+                    if (dev.FriendlyName.Contains(_needle, StringComparison.OrdinalIgnoreCase))
+                        _tcs.TrySetResult(id);
+                }
+                catch {  }
             }
-
-            // остальные методы интерфейса (ничего не делаем)
-            public void OnDeviceRemoved(string id) { }
-            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string id) { }
-            public void OnPropertyValueChanged(string id, PropertyKey key) { }
 
             public void Dispose()
             {
-                _enum.UnregisterEndpointNotificationCallback(this);
+                Enumerator.UnregisterEndpointNotificationCallback(this);
                 _ctr.Dispose();
-                _enum.Dispose();
+                Enumerator.Dispose();
             }
 
-            public void OnPropertyValueChanged(string pwstrDeviceId, NAudio.CoreAudioApi.PropertyKey key)
-            {
-                throw new NotImplementedException();
-            }
+            public void OnDeviceRemoved(string id) { }
+            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string id) { }
+            public void OnPropertyValueChanged(string id, PropertyKey key) { }
+            public void OnPropertyValueChanged(string pwstrDeviceId, NAudio.CoreAudioApi.PropertyKey key) { }
         }
     }
 
-    // Необходимые определения для COM-интеропа:
 
     /// <summary>
     /// Роли аудиоустройств.

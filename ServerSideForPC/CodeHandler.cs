@@ -12,11 +12,10 @@ namespace ServerSideForPC
 {
     internal class CodeHandler
     {
-        // === НОВОЕ: сервис громкости + ссылка на последнего клиента ===
         private static MMDeviceEnumerator _enum;
         private static MMDevice _device;
         private static bool _volumeSubscribed;
-        private static TcpClient _lastClient; // единственный телефон
+        private static TcpClient _lastClient; 
 
 
         private static DefaultAudioDeviceWatcher _watcher;
@@ -26,183 +25,214 @@ namespace ServerSideForPC
         {
             if (_started) return;
 
-            _enum = new MMDeviceEnumerator();
-            BindToCurrentDefaultDevice(); // первичная привязка к дефолтному устройству
+            try
+            {
+                _enum = new MMDeviceEnumerator();
+                BindToCurrentDefaultDevice();
 
-            // слушаем изменения громкости у текущего устройства
-            _device.AudioEndpointVolume.OnVolumeNotification += OnVolumeNotify;
+                lock (_lock)
+                {
+                    if (!_volumeSubscribed && _device?.AudioEndpointVolume != null)
+                    {
+                        _device.AudioEndpointVolume.OnVolumeNotification += OnVolumeNotify;
+                        _volumeSubscribed = true;
+                    }
+                }
 
-            // слушаем смену дефолтного устройства (Render/Multimedia)
-            _watcher = new DefaultAudioDeviceWatcher(_enum, OnDefaultRenderDeviceChanged);
-            _watcher.Start();
+                _watcher = new DefaultAudioDeviceWatcher(_enum, OnDefaultRenderDeviceChanged);
+                _watcher.Start();
 
-            _started = true;
+                _started = true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Ошибка при запуске аудио-сервиса: " + ex);
+            }
         }
 
         private static void BindToCurrentDefaultDevice()
         {
-            var newDev = _enum.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            if (_device != null && _device.ID == newDev.ID)
-                return;
+            try
+            {
+                var newDev = _enum.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                lock (_lock)
+                {
+                    if (_device != null && _device.ID == newDev.ID)
+                        return;
 
-            if (_device != null)
-                _device.AudioEndpointVolume.OnVolumeNotification -= OnVolumeNotify;
+                    if (_device != null && _volumeSubscribed)
+                    {
+                        _device.AudioEndpointVolume.OnVolumeNotification -= OnVolumeNotify;
+                    }
 
-            _device = newDev;
-            _device.AudioEndpointVolume.OnVolumeNotification += OnVolumeNotify;
+                    _device = newDev;
+
+                    if (!_volumeSubscribed && _device?.AudioEndpointVolume != null)
+                    {
+                        _device.AudioEndpointVolume.OnVolumeNotification += OnVolumeNotify;
+                        _volumeSubscribed = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Ошибка при привязке к аудио-устройству: " + ex);
+            }
         }
+
+        private static readonly object _lock = new object();
 
         private static void OnVolumeNotify(AudioVolumeNotificationData data)
         {
             try
             {
-                if (_lastClient != null)
+                lock (_lock)
                 {
-                    var msg = "VolumeSync:" + data.MasterVolume.ToString("0.###", CultureInfo.InvariantCulture);
-                    TcpServer.SendMessage(msg, _lastClient);
+                    if (_lastClient != null)
+                    {
+                        SendVolumeSync(data.MasterVolume);
+                    }
                 }
             }
-            catch { /* игнор */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Ошибка при уведомлении о громкости: " + ex);
+            }
         }
+
 
         private static void OnDefaultRenderDeviceChanged(MMDevice newDefault)
         {
-            // перепривязка к новому дефолтному устройству
-            if (_device != null)
-                _device.AudioEndpointVolume.OnVolumeNotification -= OnVolumeNotify;
-
-            _device = newDefault;
-            _device.AudioEndpointVolume.OnVolumeNotification += OnVolumeNotify;
-
-            // сразу высылаем актуальный уровень нового устройства
             try
             {
-                if (_lastClient != null)
+                lock (_lock)
                 {
-                    float cur = _device.AudioEndpointVolume.MasterVolumeLevelScalar;
-                    var msg = "VolumeSync:" + cur.ToString("0.###", CultureInfo.InvariantCulture);
-                    TcpServer.SendMessage(msg, _lastClient);
+                    if (_device != null)
+                        _device.AudioEndpointVolume.OnVolumeNotification -= OnVolumeNotify;
+
+                    _device = newDefault;
+                    if (_device?.AudioEndpointVolume != null)
+                        _device.AudioEndpointVolume.OnVolumeNotification += OnVolumeNotify;
+
+                    if (_lastClient != null)
+                        SendVolumeSync(_device.AudioEndpointVolume.MasterVolumeLevelScalar);
                 }
             }
-            catch { }
-        }
-
-        private static void EnsureVolumeServiceStarted()
-        {
-            if (_volumeSubscribed) return;
-
-            _enum = new MMDeviceEnumerator();
-            _device = _enum.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-
-            // Любое системное изменение громкости → пушим в телефон
-            _device.AudioEndpointVolume.OnVolumeNotification += data =>
+            catch (Exception ex)
             {
-                TcpServer.SendMessage(
-                    "VolumeSync:" + data.MasterVolume.ToString("0.###", CultureInfo.InvariantCulture),
-                    _lastClient
-                );
-            };
-
-            _volumeSubscribed = true;
+                Console.WriteLine("Ошибка при смене аудио-устройства: " + ex);
+            }
         }
-        static public async void CodeHandlerFunc(string jsonstring, TcpClient tcpClient)
+
+        private static void SendVolumeSync(float volume)
         {
-            _lastClient = tcpClient;
+            try
+            {
+                lock (_lock)
+                {
+                    if (_lastClient != null)
+                    {
+                        TcpServer.SendMessage("VolumeSync:" + volume.ToString("0.###", CultureInfo.InvariantCulture), _lastClient);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Ошибка при отправке VolumeSync: " + ex);
+            }
+        }
+
+      
+        public static async void CodeHandlerFunc(string jsonstring, TcpClient tcpClient)
+        {
+            lock (_lock)
+            {
+                _lastClient = tcpClient;
+            }
 
             StartAudioBindingIfNeeded();
 
             string[] subarr = jsonstring.Split(':', 2);
-            string Code = subarr[0].Trim();
-            EnsureVolumeServiceStarted();
+            string code = subarr[0].Trim();
 
-            Console.WriteLine($"Код задачи: {Code}");
-           
+            Console.WriteLine($"Код задачи: {code}");
 
-            switch (Code)
+            try
             {
-                case "ShutdownPC":
-                    {
-                        
+                switch (code)
+                {
+                    case "ShutdownPC":
                         ShutdownPC();
                         break;
-                    }
-                case "GetAudioDevices": 
-                    {
-                        List<MMDevice> devices = AudioDeviceManager.GetAudioOutputDevices();
-                       List<string> devicesNames = new List<string>();
 
-                        
-                        Console.WriteLine("Доступные аудиовыходы:");
-                        for (int i = 0; i < devices.Count; i++)
+                    case "GetAudioDevices":
                         {
-                            devicesNames.Add($"{i}: {devices[i].FriendlyName}");
-                            //Console.WriteLine($"{i}: {devices[i].FriendlyName}");
-                        }
-
-                        string response = JsonSerializer.Serialize<List<string>>(devicesNames);
-                        TcpServer.SendMessage(response,tcpClient);
-                        break;
-                    }
-                case "SwitchAudioDevice":
-                    {
-                     
-                        List<MMDevice> devices = AudioDeviceManager.GetAudioOutputDevices();
-
-
-
-                        string deviceId = devices[Convert.ToInt32(subarr[1])].ID;
-
-                        AudioDeviceManager.SetDefaultAudioPlaybackDevice(deviceId);
-
-
-                        Console.WriteLine("Устройство успешно установлено по умолчанию.");
-                        break;
-                    }
-                case "SwapDisplayPC":
-                    {
-                        DisplayControl.SetDisplayMode("internal");
-
-                        break;
-                    }
-                case "SwapDisplayTV":
-                    {
-                        DisplayControl.SetDisplayMode("external");
-                        await AudioDeviceManager.WaitAndSetDefaultAsync("TV", TimeSpan.FromSeconds(10));
-                        break;
-                    }
-                case "GetVolume":
-                    {
-                        BindToCurrentDefaultDevice();
-                        float cur = _device.AudioEndpointVolume.MasterVolumeLevelScalar;
-                        TcpServer.SendMessage(
-                            "VolumeSync:" + cur.ToString("0.###", CultureInfo.InvariantCulture),
-                            tcpClient
-                        );
-                        break;
-
-                    }
-
-                case "SetVolume":
-                    {
-                        BindToCurrentDefaultDevice();
-
-                        if (subarr.Length > 1 &&
-                            float.TryParse(subarr[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
-                        {
-                            if (v > 1f) v /= 100f;            // поддержка процентов
-                            v = Math.Clamp(v, 0f, 1f);
-
-                            _device.AudioEndpointVolume.MasterVolumeLevelScalar = v;
-                            float cur = _device.AudioEndpointVolume.MasterVolumeLevelScalar;
-                            TcpServer.SendMessage(
-                                "VolumeSync:" + cur.ToString("0.###", CultureInfo.InvariantCulture),
-                                tcpClient
-                            );
+                            List<MMDevice> devices = AudioDeviceManager.GetAudioOutputDevices();
+                            List<string> deviceNames = devices.Select((d, i) => $"{i}: {d.FriendlyName}").ToList();
+                            string response = JsonSerializer.Serialize(deviceNames);
+                            TcpServer.SendMessage(response, tcpClient);
                             break;
                         }
-                        break;
-                    }
 
+                    case "SwitchAudioDevice":
+                        {
+                            List<MMDevice> devices = AudioDeviceManager.GetAudioOutputDevices();
+                            int idx = Convert.ToInt32(subarr[1]);
+                            AudioDeviceManager.SetDefaultAudioPlaybackDevice(devices[idx].ID);
+                            Console.WriteLine("Устройство успешно установлено по умолчанию.");
+                            break;
+                        }
+
+                    case "SwapDisplayPC":
+                        DisplayControl.SetDisplayMode("internal");
+                        break;
+
+                    case "SwapDisplayTV":
+                        { 
+                        DisplayControl.SetDisplayMode("external");
+
+                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+                        try
+                        {
+                            await AudioDeviceManager.WaitAndSetDefaultAsync("TV", TimeSpan.FromSeconds(10), cts.Token);
+
+                            Console.WriteLine("Аудио успешно переключено на TV.");
+                        }
+                        catch (TaskCanceledException)
+                        {
+                            Console.WriteLine("TV-устройство не найдено в течение 10 секунд.");
+                        }
+                        break;
+                        }
+
+                    case "GetVolume":
+                        lock (_lock)
+                        {
+                            if (_device?.AudioEndpointVolume != null)
+                                SendVolumeSync(_device.AudioEndpointVolume.MasterVolumeLevelScalar);
+                        }
+                        break;
+
+                    case "SetVolume":
+                        lock (_lock)
+                        {
+                            if (subarr.Length > 1 &&
+                                float.TryParse(subarr[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+                            {
+                                if (v > 1f) v /= 100f;
+                                v = Math.Clamp(v, 0f, 1f);
+
+                                if (_device?.AudioEndpointVolume != null)
+                                    _device.AudioEndpointVolume.MasterVolumeLevelScalar = v;
+                            }
+                        }
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при обработке кода {code}: {ex}");
             }
         }
         public static void ShutdownPC()
