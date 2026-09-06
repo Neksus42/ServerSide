@@ -42,10 +42,7 @@ public sealed class ProfileService
             }
         }
 
-        if (_options.TvVolume is { } tvVolume)
-        {
-            _audio.SetVolume(tvVolume);
-        }
+        
     }
 
     public async Task ActivateExtendAsync(CancellationToken cancellationToken)
